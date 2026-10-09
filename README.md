@@ -1,144 +1,144 @@
-# RAG-BLS — Asisten AI untuk ERP Internal (Accounting & Inventaris)
+# RAG-BLS — AI Assistant for an Internal ERP (Accounting & Inventory)
 
-> **TL;DR (EN):** A production-oriented RAG + tool-calling assistant embedded in an internal Next.js ERP.
-> Users ask questions in Indonesian ("what's the balance of petty cash at end of September?") and can
+> **TL;DR:** A production-oriented RAG + tool-calling assistant embedded in an internal Next.js ERP.
+> Users ask questions in Indonesian ("what's the petty cash balance at the end of September?") and can
 > **create data by chatting** ("record a 250k fuel expense paid from petty cash today"). Answers come from
 > the ERP's own services (never invented by the LLM), retrieval is hybrid (full-text + trigram + pgvector,
 > fused with RRF), and every write goes through a **two-phase propose → human-confirm** flow with
-> role checks and audit trail.
+> role checks and an audit trail.
 
-Studi kasus portofolio. Implementasi lengkap berada di repositori ERP (private); repo ini berisi
-dokumentasi arsitektur, keputusan desain, dan pelajaran yang didapat. **Tidak ada data perusahaan,
-kredensial, maupun data keuangan di repo ini.**
+This is a portfolio case study. The full implementation lives in the (private) ERP repository; this repo
+contains the architecture documentation, design decisions, and lessons learned. **No company data,
+credentials, or financial data are included in this repo.**
 
 ---
 
-## Masalah
+## The problem
 
-ERP internal (Next.js 16 + Prisma + PostgreSQL) dipakai tim keuangan untuk COA (~3.200 akun),
-jurnal (~21.000 jurnal hasil migrasi dari Excel), laporan keuangan, dan inventaris aset.
-Kendala sehari-hari:
+An internal ERP (Next.js 16 + Prisma + PostgreSQL) is used by the finance team for the chart of accounts
+(~3,200 accounts), journal entries (~21,000 entries migrated from Excel), financial reports, and asset
+inventory. Day-to-day pain points:
 
-- Mencari akun yang tepat sulit: banyak sub akun bernama sama (mis. *BIAYA BBM KENDARAAN*) di puluhan
-  project/tim berbeda.
-- Pertanyaan sederhana ("jurnal sewa gudang bulan lalu?", "saldo kas operasional per akhir bulan?")
-  butuh beberapa kali klik dan filter.
-- Input transaksi rutin (nota bensin, serah terima laptop) repetitif.
+- Finding the right account is hard: many sub-accounts share the same name (e.g. *VEHICLE FUEL EXPENSE*)
+  across dozens of different projects/teams.
+- Simple questions ("warehouse rent journals last month?", "operating cash balance at month end?")
+  take several clicks and filters.
+- Routine data entry (fuel receipts, laptop hand-overs) is repetitive.
 
-## Solusi
+## The solution
 
-Halaman **Asisten AI** di dalam ERP:
+An **AI Assistant** page inside the ERP:
 
-| Kemampuan | Contoh |
+| Capability | Example |
 |---|---|
-| Tanya data | "Laba rugi September, 5 beban terbesar", "aset yang dipegang Dewi" |
-| Cari dengan makna & toleran typo | "ongkos bahan bakar" → akun *BIAYA BBM*, "bensn" → *Bensin* |
-| Input lewat chat | "catat biaya BBM 250 ribu hari ini dari kas" → kartu pratinjau → **Simpan Draft** |
-| Foto nota | Upload foto → OCR → draft jurnal terisi |
-| Panduan | "Siapa yang boleh posting jurnal?" |
+| Ask about data | "September P&L, top 5 expenses", "assets held by Dewi" |
+| Semantic, typo-tolerant search | "fuel costs" → *BIAYA BBM* account, "bensn" → *Bensin* |
+| Data entry by chat | "record a 250k fuel expense today from cash" → preview card → **Save Draft** |
+| Receipt photos | Upload a photo → OCR → pre-filled draft journal |
+| How-to guidance | "Who is allowed to post journals?" |
 
-## Arsitektur
+## Architecture
 
 ```mermaid
 flowchart LR
-  U[User ERP] -->|chat / foto nota| P["/accounting/asisten<br/>(Next.js page + route handler)"]
+  U[ERP user] -->|chat / receipt photo| P["/accounting/asisten<br/>(Next.js page + route handler)"]
   P --> A[Agent loop]
   A <-->|tool calling| L["LLM (OpenAI-compatible)<br/>DeepSeek V4 Flash"]
-  A --> R[Tools BACA]
-  A --> W[Tools TULIS]
-  R --> S[(Service ERP<br/>laporan, buku besar)]
+  A --> R[READ tools]
+  A --> W[WRITE tools]
+  R --> S[(ERP services<br/>reports, ledger)]
   R --> H[Hybrid retrieval]
   H --> V[("rag_db<br/>pgvector + tsvector + pg_trgm")]
-  W -->|prepare: validasi + pratinjau| C[Kartu konfirmasi]
-  C -->|user klik Simpan| X[execute: cek ulang hak akses]
+  W -->|prepare: validate + preview| C[Confirmation card]
+  C -->|user clicks Save| X[execute: re-check permissions]
   X --> S
   X --> AU[(Audit trail)]
   S --> DB[(acc_db / inv_db)]
-  DB -. sinkron incremental .-> V
+  DB -. incremental sync .-> V
 ```
 
-Detail: [docs/arsitektur.md](docs/arsitektur.md) · Keputusan desain: [docs/keputusan-desain.md](docs/keputusan-desain.md)
+Details (in Indonesian): [docs/arsitektur.md](docs/arsitektur.md) · Design decisions: [docs/keputusan-desain.md](docs/keputusan-desain.md)
 
-### Komponen
+### Components
 
-| Komponen | Isi |
+| Component | Description |
 |---|---|
-| **Index** | DB terpisah `rag_db` (Postgres + pgvector). Dokumen: akun (dengan jalur induk lengkap), jurnal (baris debit/kredit sebagai kalimat), aset, dan panduan pemakaian. |
-| **Retrieval** | 3 jalur → *Reciprocal Rank Fusion*: full-text `simple` dengan prefix (bobot lebih untuk AND), trigram pada judul (typo), cosine pgvector (makna). |
-| **Embedding** | `multilingual-e5-small` dijalankan lokal di Node (onnxruntime) — teks ERP tidak dikirim ke layanan embedding pihak ketiga. Bisa dimatikan (`keyword only`). |
-| **LLM** | Klien OpenAI-compatible tipis (`fetch`), default DeepSeek V4 Flash; ganti provider lewat env. |
-| **Tools baca (12)** | Pencarian pengetahuan, cari akun, daftar/detail jurnal, buku besar, laporan keuangan (neraca saldo, neraca, laba rugi, arus kas), ringkasan, item perlu verifikasi, cari/detail aset, master inventaris, audit log. |
-| **Tools tulis (9)** | Draft jurnal (+opsi posting), posting, ubah draft, tambah akun COA, catat aset, serah terima, pengembalian, perbaikan, nonaktifkan aset. |
-| **UI** | Chat dengan riwayat per user, render markdown aman (tanpa HTML mentah), kartu pratinjau dengan tabel debit/kredit, lampiran foto nota. |
+| **Index** | A separate `rag_db` database (Postgres + pgvector). Documents: accounts (with their full parent path), journal entries (debit/credit lines written as sentences), assets, and the ERP user guide. |
+| **Retrieval** | 3 paths → *Reciprocal Rank Fusion*: `simple` full-text with prefix matching (AND weighted higher than OR), trigram on titles (typos), pgvector cosine (meaning). |
+| **Embeddings** | `multilingual-e5-small` runs locally in Node (onnxruntime), so ERP text is never sent to a third-party embedding service. Can be disabled (keyword-only mode). |
+| **LLM** | A thin OpenAI-compatible client (`fetch`), DeepSeek V4 Flash by default; switch providers via env vars. |
+| **Read tools (12)** | Knowledge search, account search, journal list/detail, general ledger, financial reports (trial balance, balance sheet, P&L, cash flow), summary, items needing verification, asset search/detail, inventory master data, audit log. |
+| **Write tools (9)** | Draft journal (optionally post), post journal, edit draft, add chart-of-accounts entry, register asset, hand over, return, send to repair, retire asset. |
+| **UI** | Chat with per-user history, safe markdown rendering (no raw HTML), preview cards with a debit/credit table, receipt photo attachments. |
 
-## Alur tulis dua langkah (human-in-the-loop)
+## Two-phase write flow (human-in-the-loop)
 
 ```mermaid
 sequenceDiagram
   participant U as User
   participant A as Agent
   participant L as LLM
-  participant T as Tool tulis
-  participant E as Service ERP
-  U->>A: "catat bensin 250rb dari kas"
-  A->>L: pesan + daftar tool (disaring per peran)
+  participant T as Write tool
+  participant E as ERP service
+  U->>A: "record 250k fuel from cash"
+  A->>L: message + tool list (filtered by role)
   L->>A: cari_akun("BBM")
-  A->>L: kandidat akun (+ jalur induk)
+  A->>L: candidate accounts (+ parent path)
   L->>A: buat_draft_jurnal(...)
-  A->>T: prepare() — validasi akun daun, balance, periode, hak akses
-  T-->>A: pratinjau (TIDAK menulis apa pun)
-  A->>U: kartu pratinjau + tombol "Simpan Draft"
-  U->>A: klik Simpan
-  A->>T: execute() — klaim atomik, cek ulang hak akses
-  T->>E: createDraftJournal() (fungsi yang sama dengan form ERP)
+  A->>T: prepare() — validate leaf account, balance, period, permissions
+  T-->>A: preview (NOTHING is written)
+  A->>U: preview card + "Save Draft" button
+  U->>A: clicks Save
+  A->>T: execute() — atomic claim, re-check permissions
+  T->>E: createDraftJournal() (same function the ERP form uses)
   T->>E: recordAudit("[Asisten] ...")
-  T-->>U: ✅ Jurnal JV-202610-0001 tersimpan sebagai DRAFT
+  T-->>U: ✅ Journal JV-202610-0001 saved as DRAFT
 ```
 
-Prinsip yang dipegang:
+Guiding principles:
 
-1. **LLM tidak pernah menulis langsung.** Ia hanya mengusulkan; manusia yang menekan tombol.
-2. **Aturan bisnis tidak diduplikasi.** Tools memanggil service ERP yang sama dengan form biasa,
-   jadi validasi (akun induk ditolak, debit = kredit, periode tertutup) otomatis konsisten.
-3. **Hak akses dicek dua kali** (saat usulan & saat eksekusi) memakai session user, bukan "keputusan" LLM.
-   Tool yang tidak boleh dipakai sebuah peran bahkan tidak dikirim ke LLM.
-4. **Angka resmi tidak diambil dari RAG.** Saldo & laporan selalu lewat fungsi laporan ERP, sehingga
-   jawaban Asisten identik dengan halaman ERP (diverifikasi oleh test).
+1. **The LLM never writes directly.** It only proposes; a human presses the button.
+2. **Business rules are not duplicated.** Tools call the same ERP services as the regular forms, so
+   validation (parent accounts rejected, debit = credit, closed periods) stays consistent automatically.
+3. **Permissions are checked twice** (at proposal and at execution) using the user's session, not the
+   LLM's "decision". Tools a role may not use are never even sent to the LLM.
+4. **Official figures never come from RAG.** Balances and reports always go through the ERP's reporting
+   functions, so the assistant's answers match the ERP pages exactly (verified by tests).
 
-## Hasil
+## Results
 
-- Index ~24 ribu dokumen (akun + jurnal + panduan) dibangun dalam **±10 detik** (mode keyword);
-  dokumen yang tidak berubah tidak di-embed ulang (hash konten).
-- Sinkronisasi incremental: data yang masuk lewat form ERP biasa ikut ter-index ≤30 detik.
-- **13 test integrasi** dengan LLM tiruan terhadap database berisi data nyata hasil migrasi:
-  alur konfirmasi, penolakan hak akses, klik ganda, akun induk, jurnal tidak seimbang,
-  angka buku besar = service ERP, validitas riwayat tool-call.
-- Uji end-to-end di browser (Playwright) dengan server LLM tiruan: tanya ringkasan → input jurnal →
-  Simpan → riwayat tetap setelah reload; akses user Inventaris-only.
+- An index of ~24k documents (accounts + journals + guide) builds in **~10 seconds** (keyword mode);
+  unchanged documents are not re-embedded (content hash).
+- Incremental sync: data entered through regular ERP forms is indexed within ≤30 seconds.
+- **13 integration tests** using a mock LLM against a database of real migrated data:
+  confirmation flow, permission denials, double clicks, parent accounts, unbalanced journals,
+  ledger figures = ERP service, tool-call history validity.
+- End-to-end browser tests (Playwright) with a mock LLM server: ask for a summary → enter a journal →
+  Save → history persists after reload; access for inventory-only users.
 
-## Pelajaran
+## Lessons learned
 
-Ringkasnya (detail di [docs/keputusan-desain.md](docs/keputusan-desain.md)):
+In short (details in [docs/keputusan-desain.md](docs/keputusan-desain.md)):
 
-- **Nama akun duplikat** → dokumen akun wajib memuat jalur induk lengkap, dan prompt menyuruh LLM
-  bertanya bila kandidat ambigu.
-- **Kursor sinkronisasi** berbasis `updatedAt` saja melewatkan baris ber-timestamp sama → pakai
-  pasangan `(updatedAt, id)`.
-- **Paginasi index penuh** sempat mencampur urutan `updatedAt` dan kursor `id` → hanya 2.088 dari
-  21.014 jurnal ter-index. Ketahuan karena menghitung jumlah dokumen per sumber setelah reindex.
-- **Full-text OR** membuat "kas ho" cocok ke "kasbon" → tambah jalur AND berbobot lebih tinggi.
-- **Riwayat tool-call** harus disanitasi: tool_calls tanpa jawaban lengkap (proses terhenti)
-  membuat API menolak seluruh percakapan.
+- **Duplicate account names** → account documents must include the full parent path, and the prompt
+  tells the LLM to ask when candidates are ambiguous.
+- A **sync cursor** based on `updatedAt` alone skips rows with identical timestamps → use the pair
+  `(updatedAt, id)`.
+- **Full-reindex pagination** once mixed `updatedAt` ordering with an `id` cursor → only 2,088 of 21,014
+  journals were indexed. Caught by counting documents per source after reindexing.
+- **OR full-text** made "kas ho" match "kasbon" → added an AND path with a higher weight.
+- **Tool-call history** must be sanitized: tool_calls without complete answers (process died mid-turn)
+  cause the API to reject the whole conversation.
 
-## Teknologi
+## Tech stack
 
-Next.js 16 (App Router, route handler, server actions) · React 19 · TypeScript · Prisma 7 ·
-PostgreSQL 16 · pgvector · pg_trgm · transformers.js (onnxruntime) · Zod 4 (skema tool → JSON Schema) ·
+Next.js 16 (App Router, route handlers, server actions) · React 19 · TypeScript · Prisma 7 ·
+PostgreSQL 16 · pgvector · pg_trgm · transformers.js (onnxruntime) · Zod 4 (tool schemas → JSON Schema) ·
 DeepSeek API (OpenAI-compatible) · node:test · Playwright
 
-## Peta jalan
+## Roadmap
 
-- Streaming jawaban (SSE) untuk respons yang terasa lebih cepat.
-- Evaluasi retrieval dengan set pertanyaan nyata dari tim (recall@k per jenis pertanyaan).
-- Rate limit terdistribusi (saat ini in-memory per proses).
-- Re-ranker ringan untuk hasil pencarian akun.
+- Streaming answers (SSE) for a snappier feel.
+- Retrieval evaluation with real questions from the team (recall@k per question type).
+- Distributed rate limiting (currently in-memory per process).
+- A lightweight re-ranker for account search results.
