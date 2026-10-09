@@ -57,7 +57,7 @@ flowchart LR
   DB -. incremental sync .-> V
 ```
 
-Details (in Indonesian): [docs/arsitektur.md](docs/arsitektur.md) · Design decisions: [docs/keputusan-desain.md](docs/keputusan-desain.md)
+Details: [docs/architecture.md](docs/architecture.md) · Design decisions: [docs/design-decisions.md](docs/design-decisions.md)
 
 ### Components
 
@@ -118,7 +118,7 @@ Guiding principles:
 
 ## Lessons learned
 
-In short (details in [docs/keputusan-desain.md](docs/keputusan-desain.md)):
+In short (details in [docs/design-decisions.md](docs/design-decisions.md)):
 
 - **Duplicate account names** → account documents must include the full parent path, and the prompt
   tells the LLM to ask when candidates are ambiguous.
