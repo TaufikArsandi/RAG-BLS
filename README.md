@@ -7,9 +7,10 @@
 > fused with RRF), and every write goes through a **two-phase propose → human-confirm** flow with
 > role checks and an audit trail.
 
-This is a portfolio case study. The full implementation lives in the (private) ERP repository; this repo
-contains the architecture documentation, design decisions, and lessons learned. **No company data,
-credentials, or financial data are included in this repo.**
+I designed and built this assistant as the engineer on a company's live internal ERP, working against
+its real chart of accounts, journals, and asset data. The source code lives in the company's private ERP
+repository; this repo documents the architecture, design decisions, and lessons learned. **No company
+data, credentials, or financial figures are included here.**
 
 ---
 
